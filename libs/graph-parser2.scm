@@ -167,7 +167,7 @@
              (acc '()))
     (match points
       [((identifier point-name) (colon ()) (number x) (number y) . rest)
-       (loop rest (cons (make-parsed-point point-name (make-point x y)) acc))]
+       (loop rest (cons (make-parsed-point point-name (make-point point-name x y)) acc))]
       [_ (list points acc)])))
 
 (define (parse-edges edges)
@@ -192,18 +192,28 @@
          (loop cont (cons (make-parsed-node idname pname edges) acc)))]
       [_ (list nodes acc)])))
 
+(define lexeme-blocks
+  `(("nodes" (,parse-nodes . ,tree-nodes!))
+    ("points" (,parse-points . ,tree-points!))))
+
+(define (get-block-handlers name)
+  (let ((block-info (assoc name lexeme-blocks)))
+    (if block-info
+        (let ((handlers (cadr block-info)))
+          (values (car handlers) (cdr handlers)))
+        (error 'get-block-handlers "unknown block type" name))))
+
 (define (parse-lexemes lexemes)
   (define tree (make-naive-tree '() '()))
   (let loop ((lexemes lexemes))
     (match lexemes
-      [(('open-block ()) ('identifier "nodes") . connections)
-       (match-let [((cont p-nodes) (parse-nodes connections))]
-         (tree-nodes! tree p-nodes)
-         (loop cont))]
-      [(('open-block ()) ('identifier "points") . points) 
-       (match-let [((cont p-points) (parse-points points))]
-         (tree-points! tree p-points)
-         (loop cont))]
+      [(('open-block ()) ('identifier name) . connections)
+       (call-with-values
+         (lambda () (get-block-handlers name))
+         (lambda (parser-fn setter-fn!)
+            (match-let [((cont p-nodes) (parser-fn connections))]
+               (setter-fn! tree p-nodes)
+               (loop cont))))]
       [(irr . rest) (error 'parse-lexemes "unexpected input" irr)]
       [() tree])))
 
@@ -211,14 +221,12 @@
   (fields nodes))
 
 (define (resolve-graph naive)
-  ;; Build an assoc list of point-name -> point
   (define point-alist
     (map (lambda (pp)
            (cons (parsed-point-name pp)
                  (parsed-point-point pp)))
          (tree-points naive)))
 
-  ;; Build assoc list of node-name -> partial node (without edges)
   (define node-alist
     (map (lambda (pn)
            (let* ((point-name (parsed-node-point-ref pn))
@@ -229,11 +237,11 @@
                               (parsed-node-name pn)
                               point-name)))
              (cons (parsed-node-name pn)
-                   (make-node (cdr point-pair)
-                              '())))) ; edges added later
+                   (make-node (parsed-node-name pn)
+                              (cdr point-pair)
+                              '()))))
          (tree-nodes naive)))
 
-  ;; Now resolve edge names to actual node objects
   (define resolved-nodes
     (map (lambda (pn)
            (let* ((self-pair (assoc (parsed-node-name pn) node-alist))
@@ -246,15 +254,95 @@
                                                    edge-name)))
                                   (cdr target-pair)))
                               (parsed-node-edge-names pn))))
-             (make-node (node-value self)
+             (make-node (node-name self)
+                        (node-value self)
                         edges)))
          (tree-nodes naive)))
 
-  ;; Final graph
   (make-graph resolved-nodes))
 
+;; ===== PRETTY PRINTER =====
 
-(display (resolve-graph (parse-lexemes (lex-graph "
+(define (pretty-print-point point)
+  (format "~a (~a, ~a)" (point-name point) (point-x point) (point-y point)))
+
+(define (pretty-print-node node indent)
+  (let* ((point (node-value node))
+         (edges (node-edges node))
+         (indent-str (make-string indent #\space)))
+    (display indent-str)
+    (display "Node at ")
+    (display (pretty-print-point point))
+    (newline)
+    (when (not (null? edges))
+      (display indent-str)
+      (display "  Edges to:")
+      (newline)
+      (for-each (lambda (edge-node)
+                  (display indent-str)
+                  (display "    -> ")
+                  (display (pretty-print-point (node-value edge-node)))
+                  (newline))
+                edges))))
+
+(define (pretty-print-graph graph)
+  (display "=== GRAPH ===")
+  (newline)
+  (let ((nodes (graph-nodes graph))
+        (counter 0))
+    (for-each (lambda (node)
+                (display (format "Node ~a: " (node-name node)))
+                (newline)
+                (pretty-print-node node 2)
+                (newline))
+              nodes))
+  (display "=== END GRAPH ===")
+  (newline))
+
+(define (pretty-print-lexemes lexemes)
+  (display "=== TOKENS ===")
+  (newline)
+  (for-each (lambda (token)
+              (display "  ")
+              (display token)
+              (newline))
+            lexemes)
+  (display "=== END TOKENS ===")
+  (newline))
+
+(define (pretty-print-naive-tree tree)
+  (display "=== PARSE TREE ===")
+  (newline)
+  (display "Points:")
+  (newline)
+  (for-each (lambda (pp)
+              (display (format "  ~a -> ~a" 
+                              (parsed-point-name pp)
+                              (pretty-print-point (parsed-point-point pp))))
+              (newline))
+            (tree-points tree))
+  (newline)
+  (display "Nodes:")
+  (newline)
+  (for-each (lambda (pn)
+              (display (format "  ~a at ~a -> [~a]"
+                              (parsed-node-name pn)
+                              (parsed-node-point-ref pn)
+                              (string-join (map symbol->string (parsed-node-edge-names pn)) ", ")))
+              (newline))
+            (tree-nodes tree))
+  (display "=== END PARSE TREE ===")
+  (newline))
+
+;; Helper function for string-join (if not available)
+(define (string-join strings separator)
+  (if (null? strings)
+      ""
+      (if (null? (cdr strings))
+          (car strings)
+          (string-append (car strings) separator (string-join (cdr strings) separator)))))
+
+(pretty-print-graph (resolve-graph (parse-lexemes (lex-graph "
 -- points
 p1: 10 10
 p2: 11 10
@@ -263,31 +351,31 @@ p4: 11 12
 
 -- nodes
 A: p1 [B C]
-B: p3 [C]
+B: p2 [C]
 C: p3 [D]
 D: p4 []
 "))))
 
-(newline)
-(newline)
-(newline)
+; (newline)
+; (newline)
+; (newline)
 
-(display (-> "
-              -- nodes
-              A: p1 [B C]
-              B: p3 [C]
-              C: p3 [D]
-              D: p4 []
+; (display (-> "
+;               -- nodes
+;               A: p1 [B C]
+;               B: p3 [C]
+;               C: p3 [D]
+;               D: p4 []
 
-              -- points
-              p1: 10 10
-              p2: 11 10
-              p3: 10 11
-              p4: 11 12
-              "
-              lex-graph
-              parse-lexemes
-              resolve-graph))
+;               -- points
+;               p1: 10 10
+;               p2: 11 10
+;               p3: 10 11
+;               p4: 11 12
+;               "
+;               lex-graph
+;               parse-lexemes
+;               resolve-graph))
 
 ; (define lexer 'lexer)
 

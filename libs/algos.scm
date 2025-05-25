@@ -1,9 +1,10 @@
 (library (algos)
-  (export dfs make-point make-node node-value point-x point-y)
+  (export dfs make-point make-node node-value point-x point-y node-edges node-name point-name)
   (import (rnrs) (pheap))
 
   (define-record-type (point make-point is-point?)
-    (fields (immutable x)
+    (fields (immutable name)
+            (immutable x)
             (immutable y)))
 
   (define (distance p1 p2)
@@ -17,6 +18,7 @@
 
   (define-record-type (node make-node is-node?)
     (fields 
+      (immutable name)
       (immutable value)
       (immutable edges)))
 
